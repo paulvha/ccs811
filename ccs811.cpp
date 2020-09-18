@@ -19,7 +19,20 @@
  *****************************************************************************
  * 
  * Modified for Arduino CCS811 (instead of Sparkfun Combo) and Raspberry Pi
- * October 2018 Paul van Haastrecht
+ *
+ * Version 1.0 / October 2018 Paul van Haastrecht
+ * - initial version
+ * 
+ * Version 2.0 / October 2018 Paul van Haastrecht
+ * - allow for different pin for SDA and SCL with -s and -d option
+ * 
+ * Version 2.0.1 / September 2020 Paul van Haastrecht
+ *  - fix in loop_delay init
+ *  - Tested on RPI-4
+ *  - Made adjustments in output formatting to handle error messages due to stricter 
+ *    control in compiler PI OS (Buster)
+ *  - Fixed potential buffer overrun spotted by compiler PI OS (Buster)
+ *  - Warming up minutes now correct.
  * 
  * components side pin 1 - left
  * CCS811
@@ -61,6 +74,7 @@
  *****************************************************************************/
 #include "CCS811.h"
 
+// program version number
 #define  VERSION 2
 
 /* indicate these are C-programs and not to be linked */
@@ -72,8 +86,8 @@ extern "C" {
 
 typedef struct dylos
 {
-    char     port[MAXBUF];  // connected port (like /dev/ttyUSB0)
-    bool     include;        // 1 = include
+    char     port[MAXFILEBUF];   // connected port (like /dev/ttyUSB0)
+    bool     include;        // true = include
     uint16_t value_pm10;      // measured value PM10 DC1700
     uint16_t value_pm1;       // Measured value PM1  DC1700
 } dylos;
@@ -84,14 +98,13 @@ typedef struct measure
     uint8_t     verbose;        // extra information
     uint16_t    loop;           // # of measurement loops
     uint16_t    loop_delay;     // force loop delay (sec)
-    char        format[MAXBUF]; // output format
+    char        format[MAXFILEBUF]; // output format
     time_t      b_time_start;    // last baseline save
-    char        b_save_file[MAXBUF];   // baseline savefile
-    char        v_save_file[MAXBUF];   // value savefule
+    char        b_save_file[MAXFILEBUF];   // baseline savefile
+    char        v_save_file[MAXFILEBUF];   // value savefule
     uint16_t    TVOC;           // TVOC value
     uint16_t    CO2;            // CO2 value
     double      temperature;    // hold the temperature
-
     float       env_tempC;       // temperature for environment compensation
     float       env_humid;       // humidity for enviroment compensation
     struct dylos dylos;
@@ -108,7 +121,7 @@ pid_t ch_pid =1;
 /* indicate whether any data is pending in CCS811 */
 int data_ready = 0;
 
-/*file name to save all settings */
+/* file name to save all settings */
 char save_file[MAXBUF];
 
 char progname[20];
@@ -194,7 +207,6 @@ void signal_handler(int sig_num)
 {
     switch(sig_num)
     {
-        
         case SIGINT:
         case SIGKILL:
         case SIGABRT:
@@ -257,7 +269,7 @@ void set_child_signal(bool action)
 void usage()
 {
     p_printf(YELLOW, (char *)
-    "%s [options] \n\n"
+    "%s [options]\t\t(version %d)\n\n"
     
     "CCS811: \n\n"
     "-a #       i2C address              (default 0x%02x)\n"
@@ -280,7 +292,7 @@ void usage()
     "-C #       conditioning period      (default %d min)\n"
     
     "-L #       loop count               (default 0 = endless)\n"
-    "-U #       Loop delay (default depending on CCS811 mode\n"
+    "-U #       Loop delay (default depending on CCS811 mode)\n"
     "-O string  output format string\n"
     "-V #       verbose level (1 - 3)\n"
     "-W file    save formatted output to file\n"
@@ -294,7 +306,7 @@ void usage()
     "\nSpecial: \n\n"
     "-E file    save all settings to file\n"
     "-K file    load all settings from file\n"
-    ,progname,CCS811_ADDR ,RESET_GPIO,WAKE_GPIO,INT_GPIO,CCS_MODE,
+    ,progname, VERSION, CCS811_ADDR ,RESET_GPIO,WAKE_GPIO,INT_GPIO,CCS_MODE,
     (int) MySensor.settings.tempOffset, CONDITION_PERIOD, 
     MySensor.settings.baudrate, MySensor.settings.sda, MySensor.settings.scl);
 }
@@ -413,7 +425,7 @@ void get_baseline(char * file, struct measure *mm)
 }
 
 /************************************************************
- * set up child process forinterrupt handling from the CCS811
+ * set up child process for interrupt handling from the CCS811
  * 
  * @param  mm : measurement structure
  ************************************************************/
@@ -511,7 +523,7 @@ void get_baseline(char * file, struct measure *mm)
  *********************************************************/
 void init_hardware(struct measure *mm)
 {
-    /* hard_I2C requires  root permission */    
+    /* hard_I2C requires root permission */    
     if (MySensor.settings.I2C_interface == hard_I2C)
     {
         if (geteuid() != 0)
@@ -521,7 +533,7 @@ void init_hardware(struct measure *mm)
         }
     }
   
-    if(mm->verbose) printf((char *)"initialize hardware\n");
+    if(mm->verbose) p_printf(YELLOW, (char *)"initialize hardware\n");
 
     /* set raspberry Pi hardware for communications
      * 
@@ -540,12 +552,12 @@ void init_hardware(struct measure *mm)
         exit(EXIT_FAILURE);
     }
     
-    if(mm->verbose) printf((char *)"initialize CCS811\n");
+    if(mm->verbose) p_printf(YELLOW, (char *)"initialize CCS811\n");
     
     /* if interupt GPIO was enabled */
     if (MySensor.settings.interrupt_gpio > 0) 
     {
-        if(mm->verbose) printf((char *)"initialize interrupts\n");
+        if(mm->verbose) p_printf(YELLOW,(char *)"initialize interrupts\n");
         if (configure_CCS_interrupt(mm) == ERROR)   closeout();
     }
 
@@ -561,7 +573,7 @@ void init_hardware(struct measure *mm)
     /* init Dylos DC1700 port */ 
     if (mm->dylos.include)
     {
-        if(mm->verbose) printf((char *)"initialize Dylos\n");
+        if(mm->verbose) p_printf(YELLOW, (char *)"initialize Dylos\n");
         
         if (open_dylos(mm->dylos.port, mm->verbose) != 0)   closeout();
     }
@@ -579,8 +591,9 @@ void init_hardware(struct measure *mm)
             p_printf(GREEN,(char *)"\rwarming up. %d minutes to go  ",MySensor.settings.conditionPeriod);
         else
             p_printf(GREEN,(char *)"\rwarming up. 1 minute to go  \n");
+        
         sleep(60);
-    } while (MySensor.settings.conditionPeriod--);  
+    } while (--MySensor.settings.conditionPeriod);  
 }
 
 /*********************************************************************
@@ -604,7 +617,7 @@ void init_variables(struct measure *mm)
     MySensor.settings.mode = CCS_MODE;
     MySensor.settings.baseline = 0;
     MySensor.settings.conditionPeriod = CONDITION_PERIOD; 
-    MySensor.settings.refResistance = 100000;      // 100K reference resistor  
+    MySensor.settings.refResistance = 100000;    // 100K reference resistor  
   
     /* Dylos values */
     mm->dylos.include = 0;
@@ -613,6 +626,7 @@ void init_variables(struct measure *mm)
     
     /* measurement instructions & results */
     mm->verbose = 0;
+    mm->loop_delay = 0;             // added version 2.0.1 
     mm->loop = 0;
     mm->b_time_start = 0;
     mm->b_save_file[0] = 0x0;
@@ -665,36 +679,36 @@ void format_output(struct measure *mm, char *buf)
     
     while (*p != 0x0 && strlen(buf) < MAXBUF)
     {
+        tm[0] = 0x0;
         
         //CCS811
-        if (*p == 'c')  sprintf(buf, "%s CO2: %d",buf,mm->CO2);
-        else if (*p == 't') sprintf(buf, "%s TVOC: %d",buf,mm->TVOC);
-        else if (*p == 'T') sprintf(buf, "%s Temp: %2.2f",buf,mm->temperature);
-       
+        if (*p == 'c')  sprintf(tm, " CO2: %d",mm->CO2);
+        else if (*p == 't') sprintf(tm, " TVOC: %d",mm->TVOC);
+        else if (*p == 'T') sprintf(tm, " Temp: %2.2f",mm->temperature);
+      
         //Dylos
-        else if (*p == 'D') sprintf(buf, "%s PM1: %d",buf,mm->dylos.value_pm1);
-        else if (*p == 'E') sprintf(buf, "%s PM10: %d",buf,mm->dylos.value_pm10);
-        
+        else if (*p == 'D') sprintf(tm, " PM1: %d",mm->dylos.value_pm1);
+        else if (*p == 'E') sprintf(tm, " PM10: %d",mm->dylos.value_pm10);
+       
         //markup
         else if (*p == '\\')
         {
             p++;
 
-            if (*p == 't') sprintf(buf, "%s\t",buf);
-            else if (*p == 's') sprintf(buf, "%s ",buf);
-            else if (*p == 'n') sprintf(buf, "%s\n",buf);
-            else if (*p == ',') sprintf(buf, "%s,",buf);
-            else if (*p == ';') sprintf(buf, "%s;",buf);
+            if (*p == 't') sprintf(tm, "\t");
+            else if (*p == 's') sprintf(tm, " ");
+            else if (*p == 'n') sprintf(tm, "\n");
+            else if (*p == ',') sprintf(tm, ",");
+            else if (*p == ';') sprintf(tm, ";");
             else if (*p == 'l')
             {
                 // get timestamp
                 time_stamp(tm);
-                sprintf(buf, "%s %s",buf,tm);
             }
             else if (*p == '\\')
             {
                 p++; 
-                sprintf(buf, "%s%c",buf,*p);
+                sprintf(tm, "%c",*p);
             }
         }
         
@@ -706,11 +720,13 @@ void format_output(struct measure *mm, char *buf)
             return;
         }
    
+        // now add the format string to output string
+        strcat(buf,tm);
+        
         p++;    
- 
     }
     
-    sprintf(buf,"%s\n",buf);
+    strcat(buf,"\n");
 }
 
 /**********************************************************
@@ -739,7 +755,7 @@ int do_output_values(struct measure *mm)
     /* append output to a save_file ? */
     if (strlen (mm->v_save_file) > 0)
     {
-        if(mm->verbose >1 ) printf("Appending data to file %s\n",mm->v_save_file);
+        if(mm->verbose >1 ) p_printf(GREEN, (char *) "Appending data to file %s\n",mm->v_save_file);
         
         /* save baseline to file */
         fp = fopen (mm->v_save_file, "a");
@@ -893,7 +909,7 @@ int do_save_baseline(struct measure *mm)
         }
     }
     
-    if(mm->verbose) printf((char *)"saving baseline data to %s\n", mm->b_save_file);
+    if(mm->verbose) p_printf(GREEN, (char *)"saving baseline data to %s\n", mm->b_save_file);
     
     /* (re)set baseline time */
     mm->b_time_start = time(NULL);
@@ -942,7 +958,7 @@ void main_loop(struct measure *mm)
     int ret1;
     CCS811Core::status ret;
     
-    if(mm->verbose) printf((char *)"starting mainloop\n");
+    p_printf(YELLOW, (char *)"starting mainloop\n");
     
     do
     {
@@ -1278,7 +1294,7 @@ void parse_cmdline(int opt, char *option, struct measure *mm)
       break;
 
     case 'S':   // save file
-      strncpy(mm->b_save_file, option, MAXBUF);
+      strncpy(mm->b_save_file, option, MAXFILEBUF);
       break;
 
     case 'o':   // temperature offset
@@ -1330,12 +1346,12 @@ void parse_cmdline(int opt, char *option, struct measure *mm)
       break;
 
     case 'D':   // include Dylos read
-      strncpy(mm->dylos.port, option, MAXBUF);
+      strncpy(mm->dylos.port, option, MAXFILEBUF);
       mm->dylos.include = 1;
       break;
 
     case 'E':    // save current settings to file
-      strncpy(save_file,option,MAXBUF);
+      strncpy(save_file,option,MAXFILEBUF);
       break;  
   
     case 'K':   // load all setting from file
@@ -1362,7 +1378,7 @@ void parse_cmdline(int opt, char *option, struct measure *mm)
 
           
     case 'O':   // output string
-      strncpy(mm->format,option,MAXBUF);
+      strncpy(mm->format,option,MAXFILEBUF);
       break;
     
     case 'U':   // force loop delay
@@ -1380,7 +1396,7 @@ void parse_cmdline(int opt, char *option, struct measure *mm)
       break;
      
     case 'W':   // save file
-      strncpy(mm->v_save_file, option, MAXBUF);
+      strncpy(mm->v_save_file, option, MAXFILEBUF);
       break;
 
     case 'd':   // change default SCL line for soft_I2C
@@ -1542,12 +1558,12 @@ int main(int argc, char *argv[])
     strncpy(progname,argv[0],20);
     
     /* parse commandline */
-    while ((opt = getopt(argc, argv, "m:a:r:i:w:b:S:t:o:u:G:I:C:D:E:K:BH L:U:O:V:W:")) != -1)
+    while ((opt = getopt(argc, argv, "hm:a:r:i:w:b:S:t:o:u:G:I:C:D:E:K:BH L:U:O:V:W:s:d:")) != -1)
     {
         parse_cmdline(opt, optarg, &mm);
     }
     
-    /* save the current parameters */
+    /* potentially save the current parameters */
     if (strlen(save_file) > 0)  
         if (parameter_to_file(save_file, &mm) == ERROR) exit(EXIT_FAILURE);
     
@@ -1558,5 +1574,6 @@ int main(int argc, char *argv[])
     main_loop(&mm);
     
     closeout();
+    
     exit(EXIT_SUCCESS);
 }

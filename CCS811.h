@@ -104,8 +104,8 @@
 #define  RESET_GPIO         5       // GPIO hard reset
 #define  CCS_MODE           2       // default every 10 seconds
 #define  CONDITION_PERIOD   20      // default 20 min
-#define  MAXBUF             200     // maximum different buffers
-
+#define  MAXBUF             300     // maximum different buffers
+#define  MAXFILEBUF         100     // maximum different file buffers
 struct ccs811_p
 {
   public:
@@ -114,15 +114,15 @@ struct ccs811_p
     uint8_t     reset_gpio;         // GPIO reset
     uint8_t     wake_gpio;          // GPIO Wake
     uint8_t     interrupt_gpio;     // GPIO INT (optional)
-    bool         hw_initialized;     // initialized or not
-    bool         drmess;         // show driver messages (true) 
+    bool        hw_initialized;     // initialized or not
+    bool        drmess;             // show driver messages (true) 
     
     /*! I2C  information */
-    bool         I2C_interface;      // hard_I2C or soft_I2C
+    bool        I2C_interface;      // hard_I2C or soft_I2C
     uint8_t     I2CAddress;         // slave address
     uint16_t    baudrate;           // speed
-    int          sda;                // SDA GPIO (soft_I2C only)
-    int          scl;                // SCL GPIO (soft_I2C only)
+    int         sda;                // SDA GPIO (soft_I2C only)
+    int         scl;                // SCL GPIO (soft_I2C only)
     
     /*! CCS811 information */
     uint8_t     mode;               // mode 1 - 4
